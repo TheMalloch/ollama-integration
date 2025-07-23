@@ -54,6 +54,11 @@
         "command": "ollama.clearChat",
         "title": "Effacer le chat",
         "category": "Ollama"
+      },
+      {
+        "command": "ollama.parallelAnalysis",
+        "title": "Parallel Multi-LLM Analysis",
+        "category": "Ollama"
       }
     ],
     "menus": {

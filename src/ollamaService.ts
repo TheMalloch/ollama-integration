@@ -48,7 +48,7 @@ export class OllamaService {
                     num_predict: 1000
                 }
             }, {
-                timeout: 60000
+                timeout: 180000 // Augmenté pour les modèles lourds
             });
 
             if (response.data?.response) {

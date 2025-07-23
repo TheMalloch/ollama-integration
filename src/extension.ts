@@ -3,11 +3,13 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { OllamaChatViewProvider } from './chatProvider';
 import { OllamaService } from './ollamaService';
+import { LLMOrchestrator } from './llm-orchestrator';
 
 let chatProvider: OllamaChatViewProvider;
+let orchestrator: LLMOrchestrator;
 
 // Interfaces pour l'analyse avancée
-interface ImportInfo {
+export interface ImportInfo {
     source: string;
     imports: string[];
     type: 'named' | 'default' | 'namespace';
@@ -51,6 +53,7 @@ interface DependencyAnalysisQueue {
 export function activate(context: vscode.ExtensionContext) {
     // Initialize services
     const ollamaService = new OllamaService();
+    orchestrator = new LLMOrchestrator();
     chatProvider = new OllamaChatViewProvider(context, ollamaService);
 
     // Register the webview provider
@@ -328,6 +331,49 @@ export function activate(context: vscode.ExtensionContext) {
                     vscode.commands.executeCommand('workbench.action.openSettings', 'ollama.showPreviewBeforeSending');
                 }
             });
+        })
+    );
+
+    // Commande pour l'analyse parallèle multi-LLM
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ollama.parallelAnalysis', async () => {
+            const editor = vscode.window.activeTextEditor;
+            if (!editor) {
+                vscode.window.showWarningMessage('Aucun fichier ouvert');
+                return;
+            }
+
+            const filePath = editor.document.fileName;
+            const fileContent = editor.document.getText();
+            const workspaceFolder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
+            
+            try {
+                vscode.window.showInformationMessage('🚀 Analyse parallèle multi-LLM en cours...');
+                
+                // D'abord analyser les imports pour l'orchestrateur
+                const imports = await analyzeImportsWithCode(fileContent, workspaceFolder, editor.document.languageId);
+                const results = await orchestrator.analyzeInParallel(fileContent, imports, filePath);
+                
+                // Créer un message formaté pour le chat
+                const resultMessage = {
+                    sender: 'system',
+                    content: `🎯 **Analyse Parallèle Multi-LLM Terminée**\n\n` +
+                        `**Métriques de Performance:**\n` +
+                        `- Temps total: ${results.performance.totalTime}ms\n` +
+                        `- Tâches parallèles: ${results.performance.parallelTasks}\n` +
+                        `- Efficacité: ${results.performance.efficiency}%\n\n` +
+                        `**Analyse Complète:**\n${results.synthesis}`,
+                    timestamp: new Date().toISOString()
+                };
+                
+                // Utiliser la méthode privée via réflexion ou créer une méthode publique
+                (chatProvider as any).sendMessageToWebview(resultMessage);
+                
+                vscode.window.showInformationMessage('✅ Analyse parallèle terminée - Résultats dans le chat');
+                
+            } catch (error) {
+                vscode.window.showErrorMessage(`Erreur lors de l'analyse parallèle: ${error}`);
+            }
         })
     );
 
