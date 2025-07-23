@@ -21,7 +21,8 @@
           "id": "ollamaChat",
           "name": "Chat",
           "type": "webview",
-          "when": "true"
+          "when": "true",
+          "icon": "$(comment-discussion)"
         }
       ]
     },
@@ -53,11 +54,6 @@
       {
         "command": "ollama.clearChat",
         "title": "Effacer le chat",
-        "category": "Ollama"
-      },
-      {
-        "command": "ollama.parallelAnalysis",
-        "title": "Parallel Multi-LLM Analysis",
         "category": "Ollama"
       }
     ],
@@ -92,8 +88,8 @@
         },
         "ollama.model": {
           "type": "string",
-          "default": "codellama:7b",
-          "description": "Modèle Ollama à utiliser"
+          "default": "",
+          "description": "Modèle Ollama à utiliser (laissez vide pour détection automatique)"
         },
         "ollama.useFullContext": {
           "type": "boolean",
@@ -104,6 +100,16 @@
           "type": "boolean",
           "default": false,
           "description": "Afficher une prévisualisation et demander confirmation avant d'envoyer le message à Ollama"
+        },
+        "ollama.disableThinking": {
+          "type": "boolean",
+          "default": true,
+          "description": "Désactiver automatiquement la fonction 'thinking' des modèles qui la supportent (équivalent à /set nothink)"
+        },
+        "ollama.debugStreaming": {
+          "type": "boolean",
+          "default": false,
+          "description": "Activer les logs de debug pour le streaming (développement uniquement)"
         }
       }
     }

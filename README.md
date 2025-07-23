@@ -28,7 +28,7 @@ Extension VS Code pour intégration Ollama avec analyse contextuelle intelligent
 
 ## 🔄 Roadmap Développement
 
-### Phase 1: Modularisation (Priorité)
+### Phase 1: Modularisation 
 - [ ] Refactoring `extension.ts` (1515 lignes → modules)
 - [ ] Extraction `core/analysis/` - moteur analyse
 - [ ] Extraction `core/context/` - gestion contexte  
@@ -69,9 +69,9 @@ Extension VS Code pour intégration Ollama avec analyse contextuelle intelligent
 
 ```
 src/
-├── extension.ts      # 1515L - Logique principale (à refactorer)
-├── chatProvider.ts   # Interface WebView chat
-└── ollamaService.ts  # API Ollama communication
+├── extension.ts         # Point d'entrée principal avec analyse de code basique
+├── chatProvider.ts      # Interface WebView chat
+└── ollamaService.ts     # API Ollama communication avec streaming
 ```
 
 ## 🎯 Architecture Cible

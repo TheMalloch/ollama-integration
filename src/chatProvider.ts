@@ -10,6 +10,8 @@ interface ChatMessage {
 export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
     private webview?: vscode.Webview;
     private messages: ChatMessage[] = [];
+    private isCurrentlyStreaming: boolean = false;
+    private currentStreamAbortController?: AbortController;
 
     constructor(
         private readonly context: vscode.ExtensionContext,
@@ -42,11 +44,17 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
                 case 'sendMessage':
                     await this.processUserMessage(message.text);
                     break;
+                case 'stopStream':
+                    this.stopCurrentStream();
+                    break;
                 case 'clearChat':
                     this.clearChat();
                     break;
                 case 'changeModel':
                     await this.handleModelChange(message.model);
+                    break;
+                case 'refreshModels':
+                    await this.loadAvailableModels();
                     break;
                 case 'getModels':
                     await this.loadAvailableModels();
@@ -84,6 +92,22 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
         await config.update('useFullContext', enabled, vscode.ConfigurationTarget.Global);
     }
 
+    private stopCurrentStream(): void {
+        if (this.isCurrentlyStreaming && this.currentStreamAbortController) {
+            this.currentStreamAbortController.abort();
+            this.isCurrentlyStreaming = false;
+            
+            // Notifier le webview que le streaming est arrêté
+            if (this.webview) {
+                this.webview.postMessage({ 
+                    type: 'finishStreaming', 
+                    messageIndex: this.messages.length - 1,
+                    content: "Réponse interrompue par l'utilisateur." 
+                });
+            }
+        }
+    }
+
 
     public addUserMessage(message: string): void {
         if (this.webview) {
@@ -102,34 +126,95 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     private async processUserMessage(userMessage: string): Promise<void> {
-        try {
-            // Afficher l'état de chargement
-            this.webview!.postMessage({ type: 'setLoading', loading: true });
+        // Annuler le stream précédent s'il existe
+        if (this.isCurrentlyStreaming && this.currentStreamAbortController) {
+            this.currentStreamAbortController.abort();
+        }
 
-            // Obtenir la réponse d'Ollama
-            const response = await this.ollamaService.chat(userMessage, this.messages);
-            
-            // Ajouter la réponse
-            const assistantMsg: ChatMessage = {
-                role: 'assistant',
-                content: response,
-                timestamp: new Date().toISOString()
-            };
-            this.messages.push(assistantMsg);
-            this.sendMessageToWebview(assistantMsg);
+        const userMsg: ChatMessage = {
+            role: 'user',
+            content: userMessage,
+            timestamp: new Date().toISOString()
+        };
+
+        this.messages.push(userMsg);
+        this.sendMessageToWebview(userMsg);
+
+        // 🚀 Créer un message vide pour le streaming
+        const assistantMsg: ChatMessage = {
+            role: 'assistant',
+            content: '',
+            timestamp: new Date().toISOString()
+        };
+        
+        this.messages.push(assistantMsg);
+        this.sendMessageToWebview(assistantMsg);
+
+        try {
+            // Initialiser le contrôleur d'annulation
+            this.currentStreamAbortController = new AbortController();
+            this.isCurrentlyStreaming = true;
+
+            this.webview!.postMessage({ type: 'setLoading', loading: true });
+            this.webview!.postMessage({ type: 'startStreaming', messageIndex: this.messages.length - 1 });
+
+            // 🎯 Utiliser le streaming token par token
+            await this.ollamaService.chatStream(
+                userMessage,
+                this.messages.slice(0, -1), // Exclure le message assistant vide
+                
+                // OnToken: Mise à jour en temps réel
+                (token: string) => {
+                    if (this.currentStreamAbortController?.signal.aborted) {
+                        return; // Ne pas continuer si annulé
+                    }
+                    assistantMsg.content += token;
+                    this.webview!.postMessage({ 
+                        type: 'updateStreamingMessage', 
+                        messageIndex: this.messages.length - 1,
+                        content: assistantMsg.content,
+                        token: token
+                    });
+                },
+                
+                // OnComplete: Finalisation
+                (fullResponse: string) => {
+                    if (!this.currentStreamAbortController?.signal.aborted) {
+                        assistantMsg.content = fullResponse;
+                        this.webview!.postMessage({ 
+                            type: 'finishStreaming',
+                            messageIndex: this.messages.length - 1,
+                            content: fullResponse
+                        });
+                    }
+                    this.isCurrentlyStreaming = false;
+                    this.webview!.postMessage({ type: 'setLoading', loading: false });
+                },
+                
+                // OnError: Gestion d'erreur
+                (error: string) => {
+                    if (!this.currentStreamAbortController?.signal.aborted) {
+                        assistantMsg.content = `❌ Erreur: ${error}`;
+                        this.webview!.postMessage({ 
+                            type: 'finishStreaming',
+                            messageIndex: this.messages.length - 1,
+                            content: assistantMsg.content
+                        });
+                        vscode.window.showErrorMessage(`Erreur Ollama: ${error}`);
+                    }
+                    this.isCurrentlyStreaming = false;
+                    this.webview!.postMessage({ type: 'setLoading', loading: false });
+                }
+            );
 
         } catch (error) {
-            const errorMsg: ChatMessage = {
-                role: 'assistant',
-                content: `Erreur: ${error}`,
-                timestamp: new Date().toISOString()
-            };
-            this.messages.push(errorMsg);
-            this.sendMessageToWebview(errorMsg);
-            
-            vscode.window.showErrorMessage(`Erreur Ollama: ${error}`);
-        } finally {
+            if (!this.currentStreamAbortController?.signal.aborted) {
+                assistantMsg.content = `❌ Erreur inattendue: ${error}`;
+                this.sendMessageToWebview(assistantMsg);
+            }
+            this.isCurrentlyStreaming = false;
             this.webview!.postMessage({ type: 'setLoading', loading: false });
+            vscode.window.showErrorMessage(`Erreur Ollama: ${error}`);
         }
     }
 
@@ -258,6 +343,29 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
                     border-radius: 3px;
                     font-size: 12px;
                 }
+
+                .refresh-models-btn {
+                    padding: 4px 6px;
+                    background-color: var(--vscode-button-background);
+                    color: var(--vscode-button-foreground);
+                    border: none;
+                    border-radius: 3px;
+                    cursor: pointer;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    min-width: 24px;
+                    height: 24px;
+                }
+
+                .refresh-models-btn:hover {
+                    background-color: var(--vscode-button-hoverBackground);
+                }
+
+                .refresh-models-btn:active {
+                    transform: rotate(180deg);
+                    transition: transform 0.3s;
+                }
                 
                 .messages-wrapper {
                     flex: 1;
@@ -274,7 +382,7 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
                     padding: 4px 8px 4px 4px;
                     display: flex;
                     flex-direction: column;
-                    gap: 12px;
+                    gap: 8px;
                     scroll-behavior: smooth;
                     position: relative;
                 }
@@ -342,12 +450,12 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
                 }
                 
                 .message {
-                    padding: 8px 12px;
+                    padding: 6px 10px;
                     border-radius: 8px;
                     max-width: 100%;
                     word-wrap: break-word;
                     font-size: 13px;
-                    line-height: 1.4;
+                    line-height: 1.3;
                 }
                 
                 .message.user {
@@ -367,12 +475,14 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
                 
                 .message-content {
                     white-space: pre-wrap;
+                    line-height: 1.3;
                 }
 
-                /* Styles pour le contenu Markdown */
+                /* Styles pour le contenu Markdown - Version compacte */
                 .message-content h1, .message-content h2, .message-content h3 {
-                    margin: 8px 0 4px 0;
+                    margin: 4px 0 2px 0;
                     color: var(--vscode-editor-foreground);
+                    line-height: 1.2;
                 }
 
                 .message-content h1 { font-size: 1.3em; }
@@ -380,20 +490,22 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
                 .message-content h3 { font-size: 1.1em; }
 
                 .message-content p {
-                    margin: 4px 0;
+                    margin: 2px 0;
+                    line-height: 1.3;
                 }
 
                 .message-content ul, .message-content ol {
-                    margin: 4px 0 4px 20px;
+                    margin: 2px 0 2px 20px;
+                    line-height: 1.3;
                 }
 
                 .message-content li {
-                    margin: 2px 0;
+                    margin: 1px 0;
                 }
 
                 .message-content code {
                     background-color: var(--vscode-textCodeBlock-background);
-                    padding: 2px 4px;
+                    padding: 1px 3px;
                     border-radius: 3px;
                     font-family: var(--vscode-editor-font-family);
                     font-size: 0.9em;
@@ -403,10 +515,11 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
                     background-color: var(--vscode-textCodeBlock-background);
                     border: 1px solid var(--vscode-panel-border);
                     border-radius: 4px;
-                    padding: 8px;
-                    margin: 8px 0;
+                    padding: 6px;
+                    margin: 4px 0;
                     overflow-x: auto;
                     font-family: var(--vscode-editor-font-family);
+                    line-height: 1.2;
                 }
 
                 .message-content pre code {
@@ -417,20 +530,21 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
                 .message-content blockquote {
                     border-left: 3px solid var(--vscode-textBlockQuote-border);
                     background-color: var(--vscode-textBlockQuote-background);
-                    padding: 8px 12px;
-                    margin: 8px 0;
+                    padding: 4px 8px;
+                    margin: 4px 0;
                     font-style: italic;
+                    line-height: 1.3;
                 }
 
                 .message-content table {
                     border-collapse: collapse;
-                    margin: 8px 0;
+                    margin: 4px 0;
                     width: 100%;
                 }
 
                 .message-content th, .message-content td {
                     border: 1px solid var(--vscode-panel-border);
-                    padding: 4px 8px;
+                    padding: 3px 6px;
                     text-align: left;
                 }
 
@@ -505,6 +619,76 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
                 
                 .loading.show {
                     display: block;
+                }
+
+                /* 🚀 NOUVEAUX STYLES: Streaming et animations */
+                .message.streaming {
+                    position: relative;
+                    animation: pulse 1.5s ease-in-out infinite;
+                }
+
+                @keyframes pulse {
+                    0%, 100% { opacity: 1; }
+                    50% { opacity: 0.8; }
+                }
+
+                .typing-indicator {
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 4px;
+                    margin-left: 8px;
+                    animation: fadeIn 0.3s ease-in;
+                }
+
+                .typing-indicator span {
+                    width: 4px;
+                    height: 4px;
+                    background-color: var(--vscode-progressBar-background);
+                    border-radius: 50%;
+                    animation: typingDot 1.4s infinite ease-in-out;
+                }
+
+                .typing-indicator span:nth-child(1) { animation-delay: 0s; }
+                .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+                .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+
+                @keyframes typingDot {
+                    0%, 80%, 100% {
+                        transform: scale(0.8);
+                        opacity: 0.5;
+                    }
+                    40% {
+                        transform: scale(1.2);
+                        opacity: 1;
+                    }
+                }
+
+                @keyframes fadeIn {
+                    from { opacity: 0; transform: translateY(10px); }
+                    to { opacity: 1; transform: translateY(0); }
+                }
+
+                /* Animation pour le curseur de streaming */
+                .message.streaming .message-content {
+                    position: relative;
+                }
+
+                .message.streaming .message-content::after {
+                    content: '|';
+                    color: var(--vscode-focusBorder);
+                    font-weight: bold;
+                    animation: blink 1s infinite;
+                    margin-left: 2px;
+                }
+
+                @keyframes blink {
+                    0%, 50% { opacity: 1; }
+                    51%, 100% { opacity: 0; }
+                }
+
+                /* Effet de surbrillance pour nouveau contenu - DÉSACTIVÉ */
+                .message-content.highlighting {
+                    /* Animation de flash désactivée */
                 }
                 
                 .input-container {
@@ -593,6 +777,29 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
                 .send-button:disabled {
                     opacity: 0.5;
                     cursor: not-allowed;
+                }
+
+                .stop-button {
+                    padding: 8px 12px;
+                    background-color: var(--vscode-errorForeground);
+                    color: var(--vscode-button-foreground);
+                    border: none;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 13px;
+                    white-space: nowrap;
+                    align-self: flex-end;
+                    min-height: 34px;
+                    display: none;
+                }
+
+                .stop-button:hover {
+                    background-color: var(--vscode-errorForeground);
+                    opacity: 0.8;
+                }
+
+                .stop-button.show {
+                    display: block;
                 }
                 
                 .clear-button {
@@ -703,6 +910,12 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
                         <select class="model-select" id="modelSelect">
                             <!-- Modèles chargés dynamiquement -->
                         </select>
+                        <button class="refresh-models-btn" id="refreshModels" title="Actualiser les modèles">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M23 4v6h-6"></path>
+                                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                            </svg>
+                        </button>
                     </div>                    
                     <div class="context-toggle">
                         <label class="toggle-container">
@@ -727,6 +940,7 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
                     <button class="clear-button" id="clearButton">Effacer le chat</button>
                     <div class="input-row">
                         <textarea class="message-input" id="messageInput" placeholder="Demandez quelque chose à Ollama..." rows="1"></textarea>
+                        <button class="stop-button" id="stopButton">⏹ Arrêter</button>
                         <button class="send-button" id="sendButton">Envoyer</button>
                     </div>
                     <div class="input-hint">Appuyez sur Entrée pour envoyer, Shift+Entrée pour nouvelle ligne</div>
@@ -738,6 +952,7 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
                 const messagesContainer = document.getElementById('messages');
                 const messageInput = document.getElementById('messageInput');
                 const sendButton = document.getElementById('sendButton');
+                const stopButton = document.getElementById('stopButton');
                 const clearButton = document.getElementById('clearButton');
                 const loading = document.getElementById('loading');
                 const modelSelect = document.getElementById('modelSelect');
@@ -745,6 +960,8 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
 
                 let isUserScrolling = false;
                 let scrollTimeout;
+                let isStreaming = false;
+                let currentStreamAbortController = null;
 
                 // Configuration Markdown
                 marked.setOptions({
@@ -824,6 +1041,23 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
                 modelSelect.addEventListener('change', function() {
                     vscode.postMessage({ type: 'changeModel', model: this.value });
                 });
+
+                // Bouton refresh des modèles
+                const refreshModelsBtn = document.getElementById('refreshModels');
+                refreshModelsBtn.addEventListener('click', function() {
+                    // Animation rotation
+                    this.style.transform = 'rotate(360deg)';
+                    this.style.transition = 'transform 0.5s';
+                    
+                    // Reset après animation
+                    setTimeout(() => {
+                        this.style.transform = 'rotate(0deg)';
+                        this.style.transition = '';
+                    }, 500);
+                    
+                    vscode.postMessage({ type: 'refreshModels' });
+                });
+
                 const contextToggle = document.getElementById('contextToggle');
                 // Synchroniser avec la configuration
                 vscode.postMessage({ type: 'getContextSetting' });
@@ -837,10 +1071,13 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
 
                 function sendMessage() {
                     const message = messageInput.value.trim();
-                    if (message) {
+                    if (message && !isStreaming) {
                         vscode.postMessage({ type: 'sendMessage', text: message });
                         messageInput.value = '';
                         messageInput.style.height = 'auto';
+                        
+                        // Activer le mode streaming
+                        setStreamingMode(true);
                         
                         // S'assurer qu'on scrolle en bas après l'envoi
                         isUserScrolling = false;
@@ -849,6 +1086,10 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
                 }
 
                 sendButton.addEventListener('click', sendMessage);
+
+                stopButton.addEventListener('click', () => {
+                    stopCurrentStream();
+                });
                 
                 messageInput.addEventListener('keydown', (e) => {
                     if (e.key === 'Enter') {
@@ -881,6 +1122,10 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
                         case 'updateContextSetting':
                             contextToggle.checked = message.enabled;
                             break;
+                        // 🚀 NOUVEAUX: Gestion du streaming
+                        case 'startStreaming': startStreaming(message.messageIndex); break;
+                        case 'updateStreamingMessage': updateStreamingMessage(message.messageIndex, message.content, message.token); break;
+                        case 'finishStreaming': finishStreaming(message.messageIndex, message.content); break;
                     }
                 });
 
@@ -974,6 +1219,129 @@ export class OllamaChatViewProvider implements vscode.WebviewViewProvider {
                         modelSelect.appendChild(option);
                     });
                 }
+
+                // 🚀 NOUVELLES FONCTIONS: Gestion du streaming
+                let streamingMessageElement = null;
+                let streamingContentElement = null;
+                let typingIndicator = null;
+
+                function setStreamingMode(streaming) {
+                    isStreaming = streaming;
+                    if (streaming) {
+                        sendButton.style.display = 'none';
+                        stopButton.classList.add('show');
+                        messageInput.disabled = true;
+                    } else {
+                        sendButton.style.display = 'block';
+                        stopButton.classList.remove('show');
+                        messageInput.disabled = false;
+                    }
+                }
+
+                function stopCurrentStream() {
+                    if (isStreaming) {
+                        vscode.postMessage({ type: 'stopStream' });
+                        setStreamingMode(false);
+                        
+                        // Nettoyer l'état du streaming
+                        if (streamingMessageElement) {
+                            streamingMessageElement.classList.remove('streaming');
+                            if (streamingContentElement) {
+                                streamingContentElement.style.borderRight = 'none';
+                            }
+                        }
+                        removeTypingIndicator();
+                    }
+                }
+
+                function startStreaming(messageIndex) {
+                    setStreamingMode(true);
+                    
+                    // Trouver l'élément de message correspondant
+                    const messages = messagesContainer.children;
+                    if (messageIndex < messages.length) {
+                        streamingMessageElement = messages[messageIndex];
+                        streamingContentElement = streamingMessageElement.querySelector('.message-content');
+                        
+                        // Ajouter un indicateur de frappe
+                        addTypingIndicator();
+                        
+                        // Ajouter une classe pour l'animation
+                        streamingMessageElement.classList.add('streaming');
+                    }
+                }
+
+                function updateStreamingMessage(messageIndex, content, token) {
+                    if (streamingContentElement) {
+                        // Supprimer l'indicateur de frappe lors du premier token
+                        if (typingIndicator && content.length === token.length) {
+                            removeTypingIndicator();
+                        }
+                        
+                        // Rendu Markdown en temps réel
+                        streamingContentElement.innerHTML = marked.parse(content || '');
+                        
+                        // Highlighting du code si présent
+                        streamingContentElement.querySelectorAll('pre code').forEach(block => {
+                            hljs.highlightElement(block);
+                        });
+                        
+                        // Auto-scroll si pas de scroll utilisateur
+                        if (!isUserScrolling) {
+                            scrollToBottom();
+                        }
+                        
+                        // Animation de typing
+                        streamingContentElement.style.borderRight = '2px solid var(--vscode-focusBorder)';
+                        
+                        // Flash désactivé pour améliorer les performances
+                        // L'affichage progressif est suffisant
+                    }
+                }
+
+                function finishStreaming(messageIndex, content) {
+                    if (streamingContentElement) {
+                        // Rendu final
+                        streamingContentElement.innerHTML = marked.parse(content || '');
+                        
+                        // Highlighting final
+                        streamingContentElement.querySelectorAll('pre code').forEach(block => {
+                            hljs.highlightElement(block);
+                        });
+                        
+                        // Supprimer les indicateurs de streaming
+                        streamingContentElement.style.borderRight = 'none';
+                        streamingMessageElement.classList.remove('streaming');
+                        
+                        // Scroll final
+                        scrollToBottom();
+                        
+                        // Reset
+                        streamingMessageElement = null;
+                        streamingContentElement = null;
+                    }
+                    
+                    // Désactiver le mode streaming
+                    setStreamingMode(false);
+                }
+
+                function addTypingIndicator() {
+                    if (streamingContentElement && !typingIndicator) {
+                        typingIndicator = document.createElement('span');
+                        typingIndicator.className = 'typing-indicator';
+                        typingIndicator.innerHTML = '<span></span><span></span><span></span>';
+                        streamingContentElement.appendChild(typingIndicator);
+                    }
+                }
+
+                function removeTypingIndicator() {
+                    if (typingIndicator) {
+                        typingIndicator.remove();
+                        typingIndicator = null;
+                    }
+                }
+
+                // Fonction flashNewContent supprimée - effet désactivé
             </script>
         </body>
         </html>`;
