@@ -106,14 +106,11 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
-    "test": "mocha out/test/**/*.js"
+    "watch": "tsc -watch -p ./"
   },
   "devDependencies": {
-    "@types/mocha": "^10.0.10",
     "@types/node": "18.x",
     "@types/vscode": "^1.74.0",
-    "mocha": "^10.0.0",
     "typescript": "^5.0.0"
   },
   "dependencies": {
