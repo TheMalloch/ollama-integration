@@ -1,0 +1,122 @@
+{
+  "name": "ollama-integration",
+  "displayName": "Ollama Integration",
+  "description": "Your own self-hosted and customizable AI assistant in Vscode Side Panel using Ollama",
+  "version": "0.1.0",
+  "publisher": "malloch",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "views": {
+      "ollama-sidebar": [
+        {
+          "id": "ollamaChat",
+          "name": "Chat",
+          "type": "webview",
+          "when": "true"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ollama-sidebar",
+          "title": "Ollama",
+          "icon": "$(comment-discussion)"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "ollama.sendToChat",
+        "title": "Envoyer vers Ollama",
+        "category": "Ollama"
+      },
+      {
+        "command": "ollama.previewMessage",
+        "title": "Prévisualiser le message pour Ollama",
+        "category": "Ollama"
+      },
+      {
+        "command": "ollama.toggleFullContext",
+        "title": "Activer/Désactiver le contexte complet",
+        "category": "Ollama"
+      },
+      {
+        "command": "ollama.clearChat",
+        "title": "Effacer le chat",
+        "category": "Ollama"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "ollama.sendToChat",
+          "when": "editorHasSelection",
+          "group": "1_modification"
+        },
+        {
+          "command": "ollama.previewMessage",
+          "when": "editorTextFocus",
+          "group": "1_modification"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "ollama.clearChat",
+          "when": "view == ollamaChat",
+          "group": "navigation"
+        }
+      ]
+    },
+      "configuration": {
+      "title": "Ollama",
+      "properties": {
+        "ollama.serverUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "URL du serveur Ollama"
+        },
+        "ollama.model": {
+          "type": "string",
+          "default": "codellama:7b",
+          "description": "Modèle Ollama à utiliser"
+        },
+        "ollama.useFullContext": {
+          "type": "boolean",
+          "default": true,
+          "description": "Inclure le contexte complet (fichier entier + imports) lors de l'envoi de code sélectionné"
+        },
+        "ollama.showPreviewBeforeSending": {
+          "type": "boolean",
+          "default": false,
+          "description": "Afficher une prévisualisation et demander confirmation avant d'envoyer le message à Ollama"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "mocha out/test/**/*.js"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "18.x",
+    "@types/vscode": "^1.74.0",
+    "mocha": "^10.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "axios": "^1.6.0"
+  }
+}
