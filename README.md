@@ -1,304 +1,95 @@
-### package.json
-```json
-{
-  "name": "ollama-chat",
-  "displayName": "Ollama Chat",
-  "description": "Chat with LLMs like Ollama directly from VSCode.",
-  "version": "0.1.0",
-  "publisher": "your-publisher-name",
-  "engines": {
-    "vscode": "^1.70.0"
-  },
-  "activationEvents": [
-    "onCommand:ollamaChat.open"
-  ],
-  "main": "./out/extension.js",
-  "contributes": {
-    "commands": [
-      {
-        "command": "ollamaChat.open",
-        "title": "Open Ollama Chat"
-      }
-    ]
-  },
-  "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
-    "postinstall": "node ./node_modules/vscode/bin/install"
-  },
-  "devDependencies": {
-    "@types/vscode": "^1.70.0",
-    "@types/node": "^18.0.0",
-    "typescript": "^4.6.2",
-    "vscode-test": "^1.5.0"
-  }
-}
-```
+# 🦙 Ollama Integration - Extension VS Code
 
-### src/extension.ts
-```typescript
-import * as vscode from 'vscode';
-import { OllamaChatProvider } from './ollamaChatProvider';
+Extension VS Code pour intégrer Ollama avec interface chat dans la barre latérale et fonctionnalités avancées d'analyse de code contextuelle.
 
-export function activate(context: vscode.ExtensionContext) {
-  const provider = new OllamaChatProvider(context);
-  context.subscriptions.push(
-    vscode.commands.registerCommand('ollamaChat.open', () => provider.show())
-  );
-}
+## ✨ Fonctionnalités Actuelles
 
-export function deactivate() {}
-```
+### 💬 Interface Chat Intégrée
+- **Chat dans la sidebar** : Interface de chat directement dans la barre latérale VS Code
+- **Messages avec boutons réduire** : Comme demandé - "fais en sorte que le bouton réduire soit en bas du message et que la réponse elle même est un bouton réduire"
+- **Support Markdown** : Rendu complet avec coloration syntaxique
+- **Sélection de modèles** : Changement dynamique des modèles Ollama
+- **Historique persistant** : Conservation des conversations
 
-### src/ollamaChatProvider.ts
-```typescript
-import * as vscode from 'vscode';
-import { WebviewPanel, WebviewOptions, Uri } from 'vscode';
+### 🎯 Envoi de Code Intelligent
+- **Mode Basique** : Envoi simple du code sélectionné
+- **Mode Contexte Complet** : Analyse avancée avec imports et dépendances
+- **Menu contextuel** : Clic droit pour "Envoyer vers Ollama"
+- **Prévisualisation** : Option pour voir le message avant envoi
 
-export class OllamaChatProvider {
-  private panel: WebviewPanel | undefined;
+### 🔍 Analyse Contextuelle Avancée
+- **Analyse des imports** : Détection automatique des dépendances locales et externes
+- **Suivi des dépendances** : Graphe complet des relations entre fichiers
+- **Analyse de structure** : Compréhension de l'architecture du projet
+- **Code pertinent** : Inclusion intelligente du code lié au contexte
 
-  constructor(private readonly context: vscode.ExtensionContext) {}
+## 🚀 Fonctionnalités Discutées (Roadmap)
 
-  public show() {
-    if (this.panel) {
-      this.panel.reveal();
-      return;
-    }
+### 💾 Système de Contexte Persistant
+Comme mentionné : **"ajoute au readme que le contexte obtenu doit être stocké et structuré pour premièrement servir de 'sauvegarde' mais aussi pour être utilisé par d'autres LLM"**
 
-    const column = vscode.window.activeTextEditor ? vscode.ViewColumn.Beside : vscode.ViewColumn.One;
-    this.panel = vscode.window.createWebviewPanel(
-      'ollamaChat',
-      'Ollama Chat',
-      column,
-      {
-        enableScripts: true,
-        localResourceRoots: [Uri.joinPath(this.context.extensionUri, 'out')]
-      }
-    );
+- **Sauvegarde du contexte** : Stockage automatique dans `.ollama-context/`
+- **Structure pour multi-LLM** : Format compatible OpenAI, Anthropic, etc.
+- **Backup intelligent** : Préservation de l'analyse entre sessions
+- **Export/Import** : Réutilisation du contexte avec d'autres outils
 
-    this.panel.onDidDispose(() => {
-      this.panel = undefined;
-    });
-
-    this.panel.webview.html = this.getWebviewContent();
-  }
-
-  private getWebviewContent() {
-    const scriptUri = this.panel!.webview.asWebviewUri(Uri.joinPath(this.context.extensionUri, 'out', 'ollamaChat.js'));
-    return `
-      <!DOCTYPE html>
-      <html lang="en">
-        <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Ollama Chat</title>
-        </head>
-        <body>
-          <div id="app"></div>
-          <script src="${scriptUri}"></script>
-        </body>
-      </html>
-    `;
-  }
-}
-```
-
-### out/ollamaChat.js
-```javascript
-document.addEventListener('DOMContentLoaded', () => {
-  const app = document.getElementById('app');
-  const chatInput = document.createElement('input');
-  const sendButton = document.createElement('button');
-  sendButton.textContent = 'Send';
-  app.appendChild(chatInput);
-  app.appendChild(sendButton);
-
-  let messages = [];
-
-  sendButton.addEventListener('click', async () => {
-    const message = chatInput.value.trim();
-    if (message) {
-      appendMessage('user', message);
-      chatInput.value = '';
-
-      try {
-        const response = await fetch('/api/generate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: message })
-        });
-
-        if (!response.ok) {
-          throw new Error('API request failed');
-        }
-
-        const data = await response.json();
-        appendMessage('assistant', data.text);
-      } catch (error) {
-        console.error(error);
-        appendMessage('error', 'Failed to get response from Ollama');
-      }
-    }
-  });
-
-  function appendMessage(sender, text) {
-    const messageElement = document.createElement('div');
-    messageElement.className = `message ${sender}`;
-    messageElement.textContent = text;
-    app.appendChild(messageElement);
-  }
-});
-```
-
-### out/ollamaChat.css
-```css
-body {
-  font-family: Arial, sans-serif;
-}
-
-.message {
-  margin: 10px 0;
-}
-
-.user {
-  color: #3498db;
-}
-
-.assistant {
-  color: #2ecc71;
-}
-
-.error {
-  color: #e74c3c;
-}
-```
-
-# Ollama Integration Extension
-
-Extension VS Code avancée pour l'intégration intelligente avec Ollama et autres LLMs. Cette extension offre une analyse contextuelle approfondie du code et une interaction intelligente avec les modèles de langage.
-
-## ✨ Fonctionnalités Principales
-
-### 🧠 Analyse Contextuelle Intelligente
-- **Analyse des dépendances** : Détection et analyse automatique des imports locaux
-- **Compréhension du projet** : Reconnaissance des frameworks et types de projets
-- **Structure du codebase** : Analyse de l'architecture et des patterns utilisés
-- **Messages compressibles** : Réduction/expansion des réponses longues
-
-### 💾 Système de Sauvegarde Contextuelle
-- **Stockage persistant** : Le contexte analysé est automatiquement sauvegardé
-- **Structure réutilisable** : Données formatées pour être utilisées par d'autres LLMs
-- **Historique intelligent** : Conservation des analyses précédentes pour améliorer les futures interactions
-- **Export/Import** : Possibilité d'exporter le contexte pour d'autres outils
-
-### 🎯 Réponses Structurées et Adaptées
-- **Format intelligent** : Les réponses sont formatées selon le type de contenu (code, documentation, analyse)
-- **Limite adaptative** : La taille des réponses s'adapte à la complexité du codebase
-- **Présentation code** : Mise en forme optimisée pour les extraits de code
-- **Validation contextuelle** : Vérification que les réponses correspondent au contexte du projet
-
-### 🔍 Compréhension Avancée des Projets
-- **Détection de framework** : Reconnaissance automatique des frameworks utilisés (React, Vue, Angular, etc.)
-- **Type de projet** : Identification du type d'application (web, desktop, mobile, library, etc.)
-- **Patterns architecturaux** : Détection des patterns (MVC, MVP, hexagonal, etc.)
-- **Recommandations ciblées** : Conseils adaptés au type de projet détecté
-
-### 🤖 Génération de ModelFiles Spécialisés
-- **LLM spécialisé** : Utilisation d'un modèle léger pour générer des ModelFiles Ollama personnalisés
-- **Context-aware** : ModelFiles générés en fonction du contexte du projet
-- **Prompts stricts** : Création de prompts spécialisés pour des réponses plus précises
-- **Templates adaptatifs** : Génération de templates selon le framework détecté
-
-## 🚀 Installation
-
-1. Ouvrez VS Code
-2. Allez dans les Extensions (`Ctrl+Shift+X`)
-3. Recherchez "Ollama Integration"
-4. Cliquez sur "Installer"
-
-## 📖 Utilisation
-
-### Analyse Rapide
-1. Ouvrez un fichier de code
-2. Sélectionnez du code (optionnel)
-3. Utilisez `Ctrl+Shift+P` → "Ollama: Send to Chat"
-4. Choisissez votre type d'analyse
-
-### Configuration Avancée
-- **Mode Smart** : Analyse complète avec dépendances (`ollama.useFullContext: true`)
-- **Mode Basic** : Analyse simple du code sélectionné (`ollama.useFullContext: false`)
-- **Prévisualisation** : Voir le message avant envoi (`ollama.showPreviewBeforeSending: true`)
-
-## 🏗️ Architecture Modulaire
-
-Pour maintenir une base de code propre, l'extension est organisée en modules :
+### 🔧 Architecture Modulaire
+Demandée car **"le fichier devient trop long"** :
 
 ```
 src/
-├── extension.ts           # Point d'entrée principal
-├── core/
-│   ├── analysis/         # Moteur d'analyse du code
-│   ├── context/          # Gestion du contexte et sauvegarde
-│   ├── llm/             # Intégration LLM et ModelFile
-│   └── project/         # Détection de projet et framework
-├── providers/
-│   ├── chatProvider.ts   # Interface de chat
-│   └── webview/         # Composants webview
-└── utils/
-    ├── fileUtils.ts     # Utilitaires fichiers
-    └── projectDetector.ts # Détection de projets
+├── extension.ts           # Point d'entrée principal (version actuelle)
+├── chatProvider.ts        # Interface chat
+├── ollamaService.ts       # Service API Ollama
+└── Modules planifiés:
+    ├── core/analysis/     # Moteur d'analyse du code
+    ├── core/context/      # Gestion contexte et sauvegarde
+    ├── utils/             # Utilitaires et détection projet
 ```
 
-## 🔧 Fonctionnalités Techniques
+### 🤖 Génération ModelFile Spécialisé
+- **ModelFile automatique** : Génération basée sur l'analyse du projet
+- **Prompts spécialisés** : Adaptés au framework détecté
+- **Templates contextuels** : Personnalisés selon l'architecture
 
-### Stockage Contextuel
-```typescript
-interface ProjectContext {
-  metadata: ProjectMetadata;
-  dependencies: DependencyGraph;
-  structure: CodeStructure;
-  frameworks: FrameworkInfo[];
-  modelFiles: GeneratedModelFiles;
-  history: AnalysisHistory[];
-}
+### 📊 Réponses Adaptatives
+- **Limite adaptative** : Taille des réponses selon la complexité du projet
+- **Format structuré** : Organisation claire des réponses longues
+- **Compression intelligente** : Optimisation pour les gros projets
+
+## 🎮 Commandes Disponibles
+
+### Dans la Palette (Ctrl+Shift+P)
+```
+🔹 Ollama: Envoyer vers Ollama          → Envoi avec analyse contextuelle
+🔹 Ollama: Prévisualiser le message     → Voir avant d'envoyer
+🔹 Ollama: Activer/Désactiver contexte  → Toggle analyse complète
+🔹 Ollama: Effacer le chat              → Vider l'historique
 ```
 
-### Détection de Projet
-- **Framework detection** : Analyse des `package.json`, `composer.json`, `requirements.txt`, etc.
-- **Project patterns** : Reconnaissance des structures de dossiers typiques
-- **Technology stack** : Identification des technologies utilisées
-- **Code patterns** : Analyse des patterns de code utilisés
-
-### Génération ModelFile
-```ollama
-# Exemple de ModelFile généré pour un projet React
-FROM llama3.2:1b
-
-PARAMETER temperature 0.3
-PARAMETER top_p 0.9
-
-SYSTEM """
-Tu es un expert React/TypeScript spécialisé dans ce projet.
-Context: Application React avec TypeScript, utilisant Hooks et Context API.
-Framework: React 18.x avec Vite
-Patterns détectés: Component composition, Custom hooks, State management local
-
-Réponds uniquement avec du code React/TypeScript valide et des explications concises.
-Utilise les patterns détectés dans le projet.
-"""
+### Menu Contextuel (Clic droit)
+```
+📝 Envoyer vers Ollama                  → Sur code sélectionné
+🔍 Prévisualiser le message pour Ollama → Avec prévisualisation
 ```
 
 ## ⚙️ Configuration
 
-### Paramètres Principaux
+### Paramètres Actuels
 ```json
 {
+  "ollama.serverUrl": "http://localhost:11434",
+  "ollama.model": "codellama:7b", 
   "ollama.useFullContext": true,
-  "ollama.showPreviewBeforeSending": false,
+  "ollama.showPreviewBeforeSending": false
+}
+```
+
+### Configuration Avancée (Planifiée)
+```json
+{
   "ollama.contextStorage.enabled": true,
-  "ollama.contextStorage.path": "./ollama-context",
+  "ollama.contextStorage.path": ".ollama-context",
   "ollama.projectDetection.enabled": true,
   "ollama.modelFile.autoGenerate": true,
   "ollama.response.maxTokens": "adaptive",
@@ -306,48 +97,215 @@ Utilise les patterns détectés dans le projet.
 }
 ```
 
-### Sauvegarde Contextuelle
-- **Emplacement** : `.ollama-context/` dans le workspace
-- **Format** : JSON structuré avec métadonnées
-- **Compression** : Compression automatique des gros contextes
-- **Versioning** : Suivi des versions du contexte
+## 🛠️ Installation et Utilisation
 
-## 🎯 Roadmap
+### Prérequis
+- VS Code 1.74.0+
+- Ollama installé et fonctionnel (`ollama serve`)
+- Node.js pour le développement
 
-### Phase 1 - Architecture (En cours)
-- [x] Analyse contextuelle de base
-- [x] Interface chat avec compression
-- [ ] Modularisation du code
-- [ ] Système de sauvegarde contextuelle
+### Installation
+1. Cloner le repository
+2. `npm install`
+3. `npm run compile`
+4. F5 pour tester dans Extension Development Host
 
-### Phase 2 - Intelligence (Prochaine)
-- [ ] Détection avancée de frameworks
-- [ ] Génération de ModelFiles spécialisés
-- [ ] Réponses structurées et adaptatives
-- [ ] Cache intelligent du contexte
+### Utilisation Basique
+1. **Ouvrir le chat** : L'icône Ollama apparaît dans la barre d'activité
+2. **Envoyer du code** : Sélectionner du code → clic droit → "Envoyer vers Ollama"
+3. **Messages réductibles** : Cliquer sur le message ou en bas pour réduire/agrandir
+4. **Changer de modèle** : Utiliser le sélecteur en haut du chat
 
-### Phase 3 - Optimisation
+## 🔧 Fonctionnalités Techniques Actuelles
+
+### Analyse Contextuelle Intelligente
+L'extension analyse automatiquement :
+- **Imports locaux** : Détection des fichiers liés au code sélectionné
+- **Dépendances externes** : Identification des bibliothèques utilisées
+- **Structure projet** : Compréhension de l'organisation du code
+- **Code pertinent** : Inclusion du contexte nécessaire à la compréhension
+
+### Interface Chat Avancée
+- **Rendu Markdown** : Support complet avec `marked.js`
+- **Coloration syntaxique** : Highlight.js pour les blocs de code
+- **Messages compressibles** : Réduction/expansion des réponses longues
+- **Historique persistant** : Sauvegarde entre les sessions
+
+### Système de Configuration
+- **URL serveur** : Configuration flexible du serveur Ollama
+- **Sélection modèle** : Liste dynamique des modèles disponibles
+- **Mode contexte** : Activation/désactivation de l'analyse complète
+- **Prévisualisation** : Option pour valider avant envoi
+
+## 📝 Architecture du Code Actuel
+
+### Structure Simple (Version Actuelle)
+```
+src/
+├── extension.ts        # 1515 lignes - Point d'entrée avec toute la logique
+├── chatProvider.ts     # Interface WebView pour le chat
+├── ollamaService.ts    # Service API pour communiquer avec Ollama
+└── test/              # Tests unitaires
+```
+
+### Défis Identifiés
+- **Fichier monolithique** : `extension.ts` devient trop long (1515 lignes)
+- **Logique mélangée** : Analyse, interface, et service dans un même fichier
+- **Maintenance difficile** : Complexité croissante du code
+- **Extensibilité limitée** : Ajout de nouvelles fonctionnalités complexe
+
+## 🎯 Roadmap de Développement
+
+### Étape 1 : Modularisation (Priorité)
+**Problème** : "le fichier devient trop long"
+- [ ] Extraction du moteur d'analyse vers `core/analysis/`
+- [ ] Séparation de la gestion du contexte vers `core/context/`
+- [ ] Utilitaires partagés vers `utils/`
+- [ ] Interfaces et types vers `interfaces/`
+
+### Étape 2 : Contexte Persistant
+**Objectif** : "le contexte obtenu doit être stocké et structuré pour premièrement servir de 'sauvegarde' mais aussi pour être utilisé par d'autres LLM"
+- [ ] Système de sauvegarde `.ollama-context/`
+- [ ] Format JSON structuré et réutilisable
+- [ ] Export pour OpenAI, Anthropic, autres LLMs
+- [ ] Restauration automatique du contexte
+
+### Étape 3 : Intelligence Avancée
+- [ ] Détection automatique de frameworks (React, Vue, Angular, etc.)
+- [ ] Génération de ModelFiles spécialisés selon le projet
+- [ ] Recommandation automatique de LLM selon les capacités machine
+- [ ] Optimisation des paramètres (context_length, num_ctx) selon la RAM
+- [ ] Fallback intelligent vers des modèles plus légers
+
+### Étape 4 : Optimisation
+- [ ] Interface utilisateur améliorée
 - [ ] Performance et scalabilité
-- [ ] Support multi-LLM
-- [ ] Intégration CI/CD
-- [ ] Plugins tiers
+- [ ] Support multi-workspace
+- [ ] Intégration avec autres outils de développement
+
+### Étape 5 : Support Multi-Langues
+- [ ] Interface utilisateur multilingue (français, anglais,...)
+- [ ] Détection automatique de la langue du système
+- [ ] Configuration de langue personnalisée
+- [ ] Support pour les commentaires de code en plusieurs langues
+- [ ] Adaptation des prompts selon la langue sélectionnée
+- [ ] Documentation multilingue
+- [ ] Messages du chat adaptés à la langue préférée
+
+
+## 💡 Vision Future : Contexte Multi-LLM
+
+### Concept Central
+**"Le contexte obtenu doit être stocké et structuré pour premièrement servir de 'sauvegarde' mais aussi pour être utilisé par d'autres LLM"**
+
+### Structure de Contexte Envisagée
+```json
+{
+  "metadata": {
+    "project_type": "web|mobile|desktop|library",
+    "framework": "react|vue|angular|express|...",
+    "language": "typescript|javascript|python|...",
+    "analysis_date": "2024-01-15T10:30:00Z"
+  },
+  "dependencies": {
+    "local": [
+      {
+        "path": "./src/components/Button.tsx",
+        "imports": ["React", "./types"],
+        "exports": ["Button", "ButtonProps"]
+      }
+    ],
+    "external": [
+      {
+        "name": "react",
+        "version": "18.2.0",
+        "usage": "critical"
+      }
+    ]
+  },
+  "structure": {
+    "components": ["Button", "Header", "Layout"],
+    "services": ["api", "auth", "storage"],
+    "utils": ["helpers", "constants"]
+  },
+  "exports": {
+    "ollama": "FROM codellama:7b\\nSYSTEM Tu es un expert React...",
+    "openai": {
+      "system_prompt": "Tu es un assistant spécialisé en React...",
+      "context": {...}
+    },
+    "anthropic": {
+      "system": "Vous êtes un expert en développement React...",
+      "context": {...}
+    }
+  }
+}
+```
+
+### Utilisation Multi-LLM
+```bash
+# Export pour OpenAI
+curl -X POST https://api.openai.com/v1/chat/completions \\
+  -d @.ollama-context/openai-export.json
+
+# Export pour Claude
+curl -X POST https://api.anthropic.com/v1/messages \\
+  -d @.ollama-context/anthropic-export.json
+
+# ModelFile pour Ollama
+ollama create my-project-expert -f .ollama-context/modelfile
+```
 
 ## 🤝 Contribution
 
-1. Fork le projet
-2. Créez une branche pour votre fonctionnalité
-3. Committez vos changements
-4. Poussez vers la branche
-5. Ouvrez une Pull Request
+### État Actuel
+- ✅ Interface chat fonctionnelle avec boutons réduire
+- ✅ Analyse contextuelle de base
+- ✅ Intégration Ollama complète
+- ✅ Configuration flexible
 
-## 📝 Notes Techniques
+### Prochaines Contributions Souhaitées
+- 🔄 Modularisation du code (fichier trop long)
+- 💾 Implémentation du système de contexte persistant
+- 🤖 Génération automatique de ModelFiles dépendament du context du projet 
+- 📊 Réponses adaptatives selon la complexité
 
-### Gestion de la Complexité
-- **Limite adaptive** : La taille des réponses s'adapte automatiquement à la taille du codebase
-- **Context chunking** : Division intelligente du contexte pour les gros projets
-- **Selective analysis** : Analyse ciblée selon le type de requête
+---
 
-### Performance
-- **Lazy loading** : Chargement à la demande des dépendances
-- **Cache stratégique** : Mise en cache des analyses fréquentes
-- **Background processing** : Traitement en arrière-plan pour les analyses lourdes
+## 📞 Support et Feedback
+
+Cette extension évolue selon les besoins réels d'utilisation. N'hésitez pas à :
+- Reporter des bugs ou problèmes rencontrés
+- Suggérer des améliorations basées sur votre workflow
+- Partager des exemples d'usage avec différents types de projets
+- Contribuer au développement des fonctionnalités planifiées
+
+**L'objectif est de créer l'extension d'assistant IA local la plus avancée possible, offrant toutes les fonctionnalités des assistants de code existants tout en restant entièrement contextuelle et réutilisable ! 🚀**
+
+### 🎯 Vision : Assistant IA Local Complet
+
+Cette extension vise à reproduire et améliorer les capacités des assistants IA populaires :
+
+#### 🔥 Fonctionnalités d'Assistant de Code Visées
+- **Autocomplétion intelligente** : Suggestions de code en temps réel
+- **Génération de code** : Création de fonctions, classes et modules complets  
+- **Refactoring assisté** : Amélioration et restructuration automatique
+- **Documentation automatique** : Génération de commentaires et docs
+- **Tests unitaires** : Création automatique de tests basés sur le code
+- **Correction d'erreurs** : Détection et suggestions de correction
+- **Explication de code** : Analyse et explications détaillées
+- **Conversion de langages** : Translation entre différents langages de programmation
+
+#### 🏠 Avantages du Local
+- **Confidentialité totale** : Aucune donnée envoyée vers des serveurs externes
+- **Personnalisation** : Modèles adaptés spécifiquement à votre projet
+- **Performance** : Latence minimale avec Ollama local
+- **Coût zéro** : Pas d'abonnement ou de tokens payants
+- **Disponibilité** : Fonctionne même hors ligne
+
+#### 🔄 Contextualité et Réutilisabilité
+- **Apprentissage continu** : Le contexte s'enrichit à chaque utilisation
+- **Mémoire de projet** : L'assistant "connaît" votre codebase
+- **Patterns personnalisés** : Détection de vos conventions de codage
+- **Export universel** : Contexte réutilisable avec d'autres LLMs
+- **Évolution adaptative** : L'assistant s'améliore avec le projet
