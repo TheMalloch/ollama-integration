@@ -151,8 +151,7 @@ export class OllamaService {
                 options: this.buildRequestOptions({
                     temperature: 0.7,
                     num_predict: 1000
-                }),
-                no_thinking: this.isThinkingDisabled() // Ajout direct du paramètre no_thinking
+                })
             }, {
                 timeout: 180000 // Augmenté pour les modèles lourds
             });
@@ -235,8 +234,7 @@ export class OllamaService {
                 options: this.buildRequestOptions({
                     temperature: 0.7,
                     num_predict: 1000
-                }),
-                no_thinking: this.isThinkingDisabled() // Ajout direct du paramètre no_thinking
+                })
             }, {
                 timeout: 180000,
                 responseType: 'stream'
@@ -368,8 +366,7 @@ export class OllamaService {
                     temperature: 0.2, // Plus bas pour consistance
                     num_predict: 500,
                     num_ctx: 2048
-                }),
-                no_thinking: this.isThinkingDisabled() // Ajout direct du paramètre no_thinking
+                })
             }, {
                 timeout: 90000,
                 responseType: 'stream'
@@ -476,6 +473,423 @@ export class OllamaService {
             } else {
                 throw new Error(`Erreur inattendue: ${error}`);
             }
+        }
+    }
+
+    // =====================================================
+    // SYSTÈME DE TOOLS/ACTIONS POUR LE LLM
+    // =====================================================
+
+    // Définition des tools disponibles pour le LLM
+    private getAvailableTools(): any[] {
+        return [
+            {
+                type: "function",
+                function: {
+                    name: "check_workspace",
+                    description: "Analyse l'espace de travail actuel pour détecter le type de projet, frameworks, et structure",
+                    parameters: {
+                        type: "object",
+                        properties: {},
+                        required: []
+                    }
+                }
+            },
+            {
+                type: "function", 
+                function: {
+                    name: "check_directory",
+                    description: "Explore un répertoire spécifique et liste son contenu",
+                    parameters: {
+                        type: "object",
+                        properties: {
+                            path: {
+                                type: "string",
+                                description: "Chemin du répertoire à explorer (relatif au workspace)"
+                            }
+                        },
+                        required: ["path"]
+                    }
+                }
+            },
+            {
+                type: "function",
+                function: {
+                    name: "read_file",
+                    description: "Lit et analyse le contenu d'un fichier spécifique",
+                    parameters: {
+                        type: "object",
+                        properties: {
+                            filepath: {
+                                type: "string",
+                                description: "Chemin du fichier à lire"
+                            }
+                        },
+                        required: ["filepath"]
+                    }
+                }
+            },
+            {
+                type: "function",
+                function: {
+                    name: "find_functions",
+                    description: "Trouve toutes les fonctions dans un répertoire ou fichier",
+                    parameters: {
+                        type: "object",
+                        properties: {
+                            target: {
+                                type: "string",
+                                description: "Chemin du fichier ou répertoire à analyser"
+                            },
+                            pattern: {
+                                type: "string",
+                                description: "Pattern de fichiers à inclure (ex: *.ts, *.js)",
+                                default: "*"
+                            }
+                        },
+                        required: ["target"]
+                    }
+                }
+            },
+            {
+                type: "function",
+                function: {
+                    name: "check_dependencies",
+                    description: "Analyse les dépendances du projet (package.json, imports)",
+                    parameters: {
+                        type: "object",
+                        properties: {},
+                        required: []
+                    }
+                }
+            },
+            {
+                type: "function",
+                function: {
+                    name: "generate_code",
+                    description: "Génère du code selon les spécifications données",
+                    parameters: {
+                        type: "object",
+                        properties: {
+                            type: {
+                                type: "string",
+                                enum: ["function", "class", "component", "interface", "type"],
+                                description: "Type de code à générer"
+                            },
+                            name: {
+                                type: "string",
+                                description: "Nom de l'élément à générer"
+                            },
+                            specifications: {
+                                type: "string",
+                                description: "Spécifications détaillées du code à générer"
+                            }
+                        },
+                        required: ["type", "name", "specifications"]
+                    }
+                }
+            }
+        ];
+    }
+
+    // Chat avec support des tools - version simplifiée pour l'extension
+    async chatWithToolsSimple(message: string): Promise<AsyncIterable<any>> {
+        const config = this.getConfig();
+        
+        let modelToUse = config.model;
+        if (!modelToUse || modelToUse === '') {
+            modelToUse = await this.getAutoSelectedModel();
+        }
+
+        console.log(`🛠️ Chat avec tools utilisant le modèle: ${modelToUse}`);
+
+        const url = `${config.serverUrl}/api/chat`;
+        
+        // D'abord tester si Ollama supporte les tools
+        try {
+            return await this.chatWithToolsRequest(url, modelToUse, message, config);
+        } catch (error) {
+            console.warn('⚠️ Échec du chat avec tools, tentative sans tools...', error);
+            // Fallback: chat normal sans tools mais avec analyse manuelle
+            return await this.chatWithAnalysis(url, modelToUse, message, config);
+        }
+    }
+
+    private async chatWithToolsRequest(url: string, model: string, message: string, config: any): Promise<AsyncIterable<any>> {
+        const tools = this.getAvailableTools();
+        
+        const requestBody = {
+            model: model,
+            messages: [
+                {
+                    role: 'user',
+                    content: message
+                }
+            ],
+            tools: tools,
+            stream: true,
+            options: this.buildRequestOptions(config)
+        };
+
+        console.log('🔧 Tools disponibles:', tools.length);
+        console.log('📤 Envoi requête avec tools à Ollama...');
+
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody)
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('❌ Détails de l\'erreur Ollama:', errorText);
+            console.error('📤 Corps de la requête envoyée:', JSON.stringify(requestBody, null, 2));
+            throw new Error(`Erreur HTTP: ${response.status} - ${response.statusText}. Détails: ${errorText}`);
+        }
+
+        if (!response.body) {
+            throw new Error('Pas de body dans la réponse');
+        }
+
+        return this.parseStreamResponse(response.body);
+    }
+
+    private async chatWithAnalysis(url: string, model: string, message: string, config: any): Promise<AsyncIterable<any>> {
+        console.log('🔄 Mode fallback: chat avec analyse manuelle...');
+        
+        // Enrichir le message avec du contexte de workspace
+        const enrichedMessage = await this.enrichMessageWithWorkspaceContext(message);
+        
+        const requestBody = {
+            model: model,
+            messages: [
+                {
+                    role: 'user',
+                    content: enrichedMessage
+                }
+            ],
+            stream: true,
+            options: this.buildRequestOptions(config)
+        };
+
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody)
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Erreur HTTP: ${response.status} - ${response.statusText}. Détails: ${errorText}`);
+        }
+
+        if (!response.body) {
+            throw new Error('Pas de body dans la réponse');
+        }
+
+        return this.parseStreamResponse(response.body);
+    }
+
+    private async enrichMessageWithWorkspaceContext(message: string): Promise<string> {
+        // Ajouter du contexte de workspace au message
+        let context = "\n\n=== CONTEXTE WORKSPACE ===\n";
+        
+        try {
+            // Informations de base sur le workspace
+            const workspaceInfo = await this.getBasicWorkspaceInfo();
+            context += `Workspace: ${workspaceInfo.name}\n`;
+            context += `Type de projet: ${workspaceInfo.type}\n`;
+            context += `Fichiers principaux: ${workspaceInfo.mainFiles.join(', ')}\n`;
+            
+        } catch (error) {
+            context += "Erreur lors de la récupération du contexte workspace\n";
+        }
+        
+        context += "=== FIN CONTEXTE ===\n\n";
+        
+        return context + message;
+    }
+
+    private async getBasicWorkspaceInfo(): Promise<any> {
+        const vscode = require('vscode');
+        const fs = require('fs');
+        const path = require('path');
+        
+        const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspacePath) {
+            return { name: 'Inconnu', type: 'Inconnu', mainFiles: [] };
+        }
+
+        const name = path.basename(workspacePath);
+        let type = 'Inconnu';
+        const mainFiles: string[] = [];
+
+        // Détecter le type de projet
+        if (fs.existsSync(path.join(workspacePath, 'package.json'))) {
+            type = 'Node.js/JavaScript';
+            mainFiles.push('package.json');
+        }
+        if (fs.existsSync(path.join(workspacePath, 'tsconfig.json'))) {
+            type = 'TypeScript';
+            mainFiles.push('tsconfig.json');
+        }
+        if (fs.existsSync(path.join(workspacePath, 'src'))) {
+            mainFiles.push('src/');
+        }
+
+        return { name, type, mainFiles };
+    }
+
+    private async* parseStreamResponse(body: ReadableStream<Uint8Array>): AsyncIterable<any> {
+        const reader = body.getReader();
+        const decoder = new TextDecoder();
+
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                const chunk = decoder.decode(value, { stream: true });
+                const lines = chunk.split('\n').filter(line => line.trim());
+
+                for (const line of lines) {
+                    try {
+                        const parsed = JSON.parse(line);
+                        yield parsed;
+                    } catch (e) {
+                        // Ignorer les lignes qui ne sont pas du JSON valide
+                        console.warn('Ligne non-JSON ignorée:', line);
+                    }
+                }
+            }
+        } finally {
+            reader.releaseLock();
+        }
+    }
+
+    // Chat avec support des tools - version complète avec callbacks
+    async chatWithTools(
+        message: string, 
+        history: any[] = [],
+        onToken: (token: string) => void, 
+        onComplete: (fullResponse: string) => void,
+        onToolCall: (toolCall: any) => Promise<any>
+    ): Promise<void> {
+        const config = this.getConfig();
+        
+        let modelToUse = config.model;
+        if (!modelToUse || modelToUse === '') {
+            modelToUse = await this.getAutoSelectedModel();
+        }
+
+        console.log(`🛠️ Chat avec tools utilisant le modèle: ${modelToUse}`);
+
+        try {
+            const requestOptions = this.buildRequestOptions({});
+            const tools = this.getAvailableTools();
+            
+            // Construire les messages avec l'historique
+            const messages = [
+                {
+                    role: "system",
+                    content: `Tu es un assistant de développement avec accès à des outils pour analyser et manipuler le code. 
+                    
+Outils disponibles :
+• check_workspace() - Analyse l'espace de travail
+• check_directory(path) - Explore un répertoire  
+• read_file(filepath) - Lit un fichier
+• find_functions(target, pattern) - Trouve les fonctions
+• check_dependencies() - Analyse les dépendances
+• generate_code(type, name, specifications) - Génère du code
+
+Utilise ces outils pour répondre aux questions sur le code et aider au développement.`
+                },
+                ...history,
+                {
+                    role: "user", 
+                    content: message
+                }
+            ];
+            
+            const response = await axios.post(`${config.serverUrl}/api/chat`, {
+                model: modelToUse,
+                messages: messages,
+                tools: tools,
+                stream: true,
+                options: requestOptions
+            }, {
+                responseType: 'stream',
+                timeout: 90000
+            });
+
+            let fullResponse = '';
+            let buffer = '';
+
+            response.data.on('data', async (chunk: Buffer) => {
+                try {
+                    buffer += chunk.toString();
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+                    
+                    for (const line of lines) {
+                        const trimmedLine = line.trim();
+                        if (trimmedLine) {
+                            try {
+                                const data = JSON.parse(trimmedLine);
+                                
+                                // Gestion des tool calls
+                                if (data.message?.tool_calls) {
+                                    for (const toolCall of data.message.tool_calls) {
+                                        console.log(`🔧 Exécution de l'outil: ${toolCall.function.name}`);
+                                        const toolResult = await onToolCall(toolCall);
+                                        console.log(`✅ Résultat outil: ${JSON.stringify(toolResult).substring(0, 100)}...`);
+                                    }
+                                }
+                                
+                                // Gestion du contenu normal
+                                if (data.message?.content) {
+                                    fullResponse += data.message.content;
+                                    onToken(data.message.content);
+                                }
+                                
+                                if (data.done) {
+                                    onComplete(fullResponse);
+                                }
+                            } catch (parseError) {
+                                console.debug(`Ligne ignorée: ${trimmedLine.substring(0, 50)}...`);
+                            }
+                        }
+                    }
+                } catch (error) {
+                    console.warn('Erreur traitement chunk:', error);
+                }
+            });
+
+            response.data.on('end', () => {
+                if (buffer.trim()) {
+                    try {
+                        const data = JSON.parse(buffer.trim());
+                        if (data.message?.content) {
+                            fullResponse += data.message.content;
+                            onToken(data.message.content);
+                        }
+                        if (data.done) {
+                            onComplete(fullResponse);
+                        }
+                    } catch (error) {
+                        console.debug('Buffer final ignoré');
+                    }
+                }
+                if (fullResponse) {
+                    onComplete(fullResponse);
+                }
+            });
+
+        } catch (error) {
+            if (axios.isAxiosError(error)) {
+                throw new Error(`Erreur API Ollama tools: ${error.message}`);
+            }
+            throw error;
         }
     }
 }

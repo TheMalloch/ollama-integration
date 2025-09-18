@@ -48,10 +48,362 @@ interface DependencyAnalysisQueue {
     currentDepth: number;
 }
 
+// =====================================================
+// GESTIONNAIRE D'EXÉCUTION DES TOOLS
+// =====================================================
+
+class ToolExecutor {
+    
+    async executeToolCall(toolCall: any): Promise<any> {
+        const functionName = toolCall.function.name;
+        const args = JSON.parse(toolCall.function.arguments || '{}');
+        
+        console.log(`🛠️ Exécution de ${functionName} avec args:`, args);
+        
+        try {
+            switch (functionName) {
+                case 'check_workspace':
+                    return await this.checkWorkspace();
+                    
+                case 'check_directory':
+                    return await this.checkDirectory(args.path);
+                    
+                case 'read_file':
+                    return await this.readFile(args.filepath);
+                    
+                case 'find_functions':
+                    return await this.findFunctions(args.target, args.pattern);
+                    
+                case 'check_dependencies':
+                    return await this.checkDependencies();
+                    
+                case 'generate_code':
+                    return await this.generateCode(args.type, args.name, args.specifications);
+                    
+                default:
+                    return { error: `Outil inconnu: ${functionName}` };
+            }
+        } catch (error) {
+            console.error(`Erreur lors de l'exécution de ${functionName}:`, error);
+            return { error: `Erreur lors de l'exécution: ${error}` };
+        }
+    }
+    
+    private async checkWorkspace(): Promise<any> {
+        const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspacePath) {
+            return { error: "Aucun workspace ouvert" };
+        }
+        
+        const packageJsonPath = path.join(workspacePath, 'package.json');
+        let projectType = 'unknown';
+        let dependencies: string[] = [];
+        let devDependencies: string[] = [];
+        
+        try {
+            if (fs.existsSync(packageJsonPath)) {
+                const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+                projectType = this.detectProjectType(packageJson);
+                dependencies = Object.keys(packageJson.dependencies || {});
+                devDependencies = Object.keys(packageJson.devDependencies || {});
+            }
+        } catch (error) {
+            console.warn('Erreur lecture package.json:', error);
+        }
+        
+        return {
+            workspace_path: path.basename(workspacePath),
+            project_type: projectType,
+            dependencies: dependencies.slice(0, 10),
+            dev_dependencies: devDependencies.slice(0, 10),
+            files_count: await this.countFiles(workspacePath),
+            has_git: fs.existsSync(path.join(workspacePath, '.git')),
+            has_typescript: fs.existsSync(path.join(workspacePath, 'tsconfig.json')),
+            has_eslint: fs.existsSync(path.join(workspacePath, '.eslintrc.js')) || fs.existsSync(path.join(workspacePath, '.eslintrc.json')),
+            timestamp: new Date().toISOString()
+        };
+    }
+    
+    private async checkDirectory(dirPath: string): Promise<any> {
+        const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspacePath) {
+            return { error: "Aucun workspace ouvert" };
+        }
+        
+        const fullPath = path.resolve(workspacePath, dirPath);
+        
+        try {
+            if (!fs.existsSync(fullPath)) {
+                return { error: `Répertoire introuvable: ${dirPath}` };
+            }
+            
+            const items = fs.readdirSync(fullPath, { withFileTypes: true });
+            const directories: string[] = [];
+            const files: any[] = [];
+            
+            for (const item of items) {
+                if (item.isDirectory() && !item.name.startsWith('.') && item.name !== 'node_modules') {
+                    directories.push(item.name);
+                } else if (item.isFile()) {
+                    const filePath = path.join(fullPath, item.name);
+                    const stats = fs.statSync(filePath);
+                    files.push({
+                        name: item.name,
+                        size: stats.size,
+                        extension: path.extname(item.name),
+                        modified: stats.mtime.toISOString()
+                    });
+                }
+            }
+            
+            return {
+                path: dirPath,
+                directories: directories.sort(),
+                files: files.sort((a, b) => a.name.localeCompare(b.name)),
+                total_items: directories.length + files.length
+            };
+            
+        } catch (error) {
+            return { error: `Erreur lecture répertoire: ${error}` };
+        }
+    }
+    
+    private async readFile(filepath: string): Promise<any> {
+        const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspacePath) {
+            return { error: "Aucun workspace ouvert" };
+        }
+        
+        const fullPath = path.resolve(workspacePath, filepath);
+        
+        try {
+            if (!fs.existsSync(fullPath)) {
+                return { error: `Fichier introuvable: ${filepath}` };
+            }
+            
+            const stats = fs.statSync(fullPath);
+            if (stats.size > 100000) { // Limite à 100KB
+                return { error: `Fichier trop volumineux: ${filepath} (${stats.size} bytes)` };
+            }
+            
+            const content = fs.readFileSync(fullPath, 'utf8');
+            const lines = content.split('\n');
+            
+            return {
+                filepath: filepath,
+                content: content,
+                lines_count: lines.length,
+                size: stats.size,
+                extension: path.extname(filepath),
+                modified: stats.mtime.toISOString()
+            };
+            
+        } catch (error) {
+            return { error: `Erreur lecture fichier: ${error}` };
+        }
+    }
+    
+    private async findFunctions(target: string, pattern: string = '*'): Promise<any> {
+        const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspacePath) {
+            return { error: "Aucun workspace ouvert" };
+        }
+        
+        const targetPath = path.resolve(workspacePath, target);
+        const functions: any[] = [];
+        
+        try {
+            if (fs.existsSync(targetPath)) {
+                const stats = fs.statSync(targetPath);
+                
+                if (stats.isFile()) {
+                    // Analyser un seul fichier
+                    const fileFunctions = await this.extractFunctionsFromFile(targetPath);
+                    functions.push(...fileFunctions);
+                } else if (stats.isDirectory()) {
+                    // Analyser tous les fichiers du répertoire
+                    const files = this.getFilesInDirectory(targetPath, pattern);
+                    for (const file of files) {
+                        const fileFunctions = await this.extractFunctionsFromFile(file);
+                        functions.push(...fileFunctions);
+                    }
+                }
+            }
+            
+            return {
+                target: target,
+                pattern: pattern,
+                functions: functions,
+                total_functions: functions.length
+            };
+            
+        } catch (error) {
+            return { error: `Erreur analyse fonctions: ${error}` };
+        }
+    }
+    
+    private async checkDependencies(): Promise<any> {
+        const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspacePath) {
+            return { error: "Aucun workspace ouvert" };
+        }
+        
+        const packageJsonPath = path.join(workspacePath, 'package.json');
+        
+        try {
+            if (!fs.existsSync(packageJsonPath)) {
+                return { error: "package.json introuvable" };
+            }
+            
+            const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+            const dependencies = packageJson.dependencies || {};
+            const devDependencies = packageJson.devDependencies || {};
+            
+            return {
+                dependencies: dependencies,
+                dev_dependencies: devDependencies,
+                total_dependencies: Object.keys(dependencies).length + Object.keys(devDependencies).length,
+                project_name: packageJson.name,
+                version: packageJson.version,
+                scripts: packageJson.scripts || {}
+            };
+            
+        } catch (error) {
+            return { error: `Erreur analyse dépendances: ${error}` };
+        }
+    }
+    
+    private async generateCode(type: string, name: string, specifications: string): Promise<any> {
+        // Pour l'instant, génération basique - peut être amélioré avec des templates
+        let generatedCode = '';
+        
+        switch (type) {
+            case 'function':
+                generatedCode = `function ${name}() {\n    // TODO: Implémenter selon les spécifications\n    // ${specifications}\n}`;
+                break;
+            case 'class':
+                generatedCode = `class ${name} {\n    constructor() {\n        // TODO: Implémenter selon les spécifications\n        // ${specifications}\n    }\n}`;
+                break;
+            case 'interface':
+                generatedCode = `interface ${name} {\n    // TODO: Définir selon les spécifications\n    // ${specifications}\n}`;
+                break;
+            case 'component':
+                generatedCode = `const ${name} = () => {\n    // TODO: Implémenter composant selon les spécifications\n    // ${specifications}\n    return null;\n};`;
+                break;
+            default:
+                return { error: `Type de code non supporté: ${type}` };
+        }
+        
+        return {
+            type: type,
+            name: name,
+            specifications: specifications,
+            generated_code: generatedCode,
+            timestamp: new Date().toISOString()
+        };
+    }
+    
+    // Méthodes utilitaires
+    private detectProjectType(packageJson: any): string {
+        const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
+        
+        if (deps.react || deps['@types/react']) return 'React';
+        if (deps.vue || deps['@vue/cli']) return 'Vue.js';
+        if (deps.angular || deps['@angular/core']) return 'Angular';
+        if (deps.next || deps['next.js']) return 'Next.js';
+        if (deps.express) return 'Express.js';
+        if (deps.typescript || deps['@types/node']) return 'TypeScript';
+        if (packageJson.type === 'module') return 'ES Module';
+        
+        return 'Node.js';
+    }
+    
+    private async countFiles(dirPath: string): Promise<number> {
+        try {
+            const items = fs.readdirSync(dirPath, { withFileTypes: true });
+            let count = 0;
+            
+            for (const item of items) {
+                if (item.name.startsWith('.') || item.name === 'node_modules') continue;
+                
+                if (item.isFile()) {
+                    count++;
+                } else if (item.isDirectory()) {
+                    count += await this.countFiles(path.join(dirPath, item.name));
+                }
+            }
+            
+            return count;
+        } catch (error) {
+            return 0;
+        }
+    }
+    
+    private getFilesInDirectory(dirPath: string, pattern: string): string[] {
+        const files: string[] = [];
+        
+        try {
+            const items = fs.readdirSync(dirPath, { withFileTypes: true });
+            
+            for (const item of items) {
+                if (item.name.startsWith('.') || item.name === 'node_modules') continue;
+                
+                const fullPath = path.join(dirPath, item.name);
+                
+                if (item.isFile()) {
+                    if (pattern === '*' || item.name.includes(pattern.replace('*', ''))) {
+                        files.push(fullPath);
+                    }
+                } else if (item.isDirectory()) {
+                    files.push(...this.getFilesInDirectory(fullPath, pattern));
+                }
+            }
+        } catch (error) {
+            console.warn('Erreur lecture répertoire:', error);
+        }
+        
+        return files;
+    }
+    
+    private async extractFunctionsFromFile(filePath: string): Promise<any[]> {
+        try {
+            const content = fs.readFileSync(filePath, 'utf8');
+            const functions: any[] = [];
+            const lines = content.split('\n');
+            
+            // Regex pour détecter les fonctions (basique)
+            const functionRegex = /(?:function\s+(\w+)|const\s+(\w+)\s*=\s*(?:\([^)]*\)\s*=>|\([^)]*\)\s*:\s*[^=]*=>)|async\s+function\s+(\w+)|export\s+(?:async\s+)?function\s+(\w+))/g;
+            
+            lines.forEach((line, index) => {
+                let match;
+                while ((match = functionRegex.exec(line)) !== null) {
+                    const functionName = match[1] || match[2] || match[3] || match[4];
+                    if (functionName) {
+                        functions.push({
+                            name: functionName,
+                            line: index + 1,
+                            file: path.relative(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '', filePath),
+                            signature: line.trim()
+                        });
+                    }
+                }
+            });
+            
+            return functions;
+        } catch (error) {
+            console.warn('Erreur extraction fonctions:', error);
+            return [];
+        }
+    }
+}
+
 export function activate(context: vscode.ExtensionContext) {
     // Initialize services
     const ollamaService = new OllamaService();
     chatProvider = new OllamaChatViewProvider(context, ollamaService);
+    
+    // Initialize tool executor
+    const toolExecutor = new ToolExecutor();
 
     // Register the webview provider
     context.subscriptions.push(
@@ -70,6 +422,79 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.commands.registerCommand('ollama.clearChat', () => {
             chatProvider.clearChat();
+        })
+    );
+
+    // Register chat with tools command  
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ollama-integration.chatWithTools', async () => {
+            const prompt = await vscode.window.showInputBox({
+                prompt: 'Entrez votre question pour Ollama avec tools',
+                placeHolder: 'Ex: Analyse mon workspace et trouve tous les problèmes'
+            });
+            
+            if (prompt) {
+                try {
+                    await vscode.window.withProgress({
+                        location: vscode.ProgressLocation.Notification,
+                        title: "Ollama Tools en cours...",
+                        cancellable: false
+                    }, async (progress, token) => {
+                        
+                        progress.report({ increment: 0, message: "Connexion à Ollama..." });
+                        
+                        // Stream response avec tools
+                        const stream = await ollamaService.chatWithToolsSimple(prompt);
+                        let fullResponse = '';
+                        let toolCalls: any[] = [];
+                        
+                        progress.report({ increment: 20, message: "Traitement de la réponse..." });
+                        
+                        // Traiter le stream
+                        for await (const chunk of stream) {
+                            if (chunk.message?.content) {
+                                fullResponse += chunk.message.content;
+                            }
+                            
+                            if (chunk.message?.tool_calls) {
+                                toolCalls.push(...chunk.message.tool_calls);
+                            }
+                            
+                            if (chunk.done) break;
+                        }
+                        
+                        progress.report({ increment: 40, message: "Exécution des tools..." });
+                        
+                        // Exécuter les tool calls
+                        const toolResults: any[] = [];
+                        if (toolCalls.length > 0) {
+                            for (const toolCall of toolCalls) {
+                                const result = await toolExecutor.executeToolCall(toolCall);
+                                toolResults.push({
+                                    tool: toolCall.function.name,
+                                    result: result
+                                });
+                            }
+                        }
+                        
+                        progress.report({ increment: 80, message: "Finalisation..." });
+                        
+                        // Afficher les résultats dans un nouveau document
+                        const doc = await vscode.workspace.openTextDocument({
+                            content: `# Résultats Ollama Tools\n\n## Question:\n${prompt}\n\n## Réponse:\n${fullResponse}\n\n## Tools exécutés:\n\`\`\`json\n${JSON.stringify(toolResults, null, 2)}\n\`\`\``,
+                            language: 'markdown'
+                        });
+                        
+                        await vscode.window.showTextDocument(doc);
+                        
+                        progress.report({ increment: 100, message: "Terminé!" });
+                    });
+                    
+                } catch (error) {
+                    vscode.window.showErrorMessage(`Erreur Ollama Tools: ${error}`);
+                    console.error('Erreur chatWithTools:', error);
+                }
+            }
         })
     );
 

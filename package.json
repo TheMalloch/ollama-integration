@@ -55,6 +55,11 @@
         "command": "ollama.clearChat",
         "title": "Effacer le chat",
         "category": "Ollama"
+      },
+      {
+        "command": "ollama-integration.chatWithTools",
+        "title": "Chat avec Tools Ollama",
+        "category": "Ollama"
       }
     ],
     "menus": {
